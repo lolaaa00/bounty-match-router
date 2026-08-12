@@ -43,7 +43,7 @@ def parties():
 @pytest.fixture(scope="module")
 def router(parties):
     factory = get_contract_factory("BountyMatchRouter")
-    contract = factory.deploy(account=parties["owner"], args=[parties["owner"].address, 10, 10])
+    contract = factory.deploy(account=parties["owner"], args=[parties["owner"].address, 10, 10], wait_interval=12000, wait_retries=25)
     print(f"\n[deploy] BountyMatchRouter at {contract.address}")
     return contract
 
@@ -58,7 +58,7 @@ def reader(parties, router):
     # once the right operand is itself absolute.
     example_path = (Path(__file__).resolve().parents[2] / "examples" / "bounty_status_reader.py")
     factory = ContractFactory.from_file_path(example_path)
-    contract = factory.deploy(account=parties["owner"], args=[router.address])
+    contract = factory.deploy(account=parties["owner"], args=[router.address], wait_interval=12000, wait_retries=25)
     print(f"[deploy] BountyStatusReader at {contract.address}")
     return contract
 
@@ -77,11 +77,11 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- write: register two workers, one weak fit one strong fit -------
     print("\n[write] register_worker(worker_bad, BAD_SUMMARY)")
-    rb = router.connect(worker_bad).register_worker(args=[BAD_SUMMARY]).transact()
+    rb = router.connect(worker_bad).register_worker(args=[BAD_SUMMARY]).transact(wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(rb), rb
 
     print("[write] register_worker(worker_good, GOOD_SUMMARY)")
-    rg = router.connect(worker_good).register_worker(args=[GOOD_SUMMARY]).transact()
+    rg = router.connect(worker_good).register_worker(args=[GOOD_SUMMARY]).transact(wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(rg), rg
 
     wc = router.worker_count(args=[]).call()
@@ -90,13 +90,13 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- negative: posting a bounty with zero value is refused ----------
     print("\n[write] post_bounty with zero value - expect refusal")
-    bad_post = router.connect(poster).post_bounty(args=[REQUIREMENT_TRUE]).transact(value=0)
+    bad_post = router.connect(poster).post_bounty(args=[REQUIREMENT_TRUE]).transact(value=0, wait_interval=12000, wait_retries=25)
     assert tx_execution_failed(bad_post), "zero-value bounty must be refused"
     print("  refused as expected")
 
     # --- write: post a real bounty ---------------------------------------
     print(f"\n[write] post_bounty(REQUIREMENT_TRUE) as poster, value={FEE}")
-    post_tx = router.connect(poster).post_bounty(args=[REQUIREMENT_TRUE]).transact(value=FEE)
+    post_tx = router.connect(poster).post_bounty(args=[REQUIREMENT_TRUE]).transact(value=FEE, wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(post_tx), post_tx
     bounty_id = 1
 
@@ -106,7 +106,7 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- negative: unknown bounty id -------------------------------------
     print("\n[write] find_and_judge(999) - expect refusal (unknown bounty)")
-    bad_judge = router.find_and_judge(args=[999]).transact()
+    bad_judge = router.find_and_judge(args=[999]).transact(wait_interval=12000, wait_retries=25)
     assert tx_execution_failed(bad_judge), "judging an unknown bounty must be refused"
     print("  refused as expected")
 
@@ -161,14 +161,14 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
         # --- negative: only the proposed candidate may confirm -------------
         wrong_confirmer = worker_bad if proposed_candidate.as_hex.lower() != worker_bad.address.lower() else worker_good
         print("\n[write] confirm_match(1) as the WRONG worker - expect refusal")
-        bad_confirm = router.connect(wrong_confirmer).confirm_match(args=[bounty_id]).transact()
+        bad_confirm = router.connect(wrong_confirmer).confirm_match(args=[bounty_id]).transact(wait_interval=12000, wait_retries=25)
         assert tx_execution_failed(bad_confirm), "non-candidate confirming must be refused"
         print("  refused as expected")
 
         # --- write: confirm_match - real payout ------------------------------
         candidate_account = worker_good if proposed_candidate.as_hex.lower() == worker_good.address.lower() else worker_bad
         print(f"\n[write] confirm_match(1) as the proposed candidate")
-        confirm_tx = router.connect(candidate_account).confirm_match(args=[bounty_id]).transact()
+        confirm_tx = router.connect(candidate_account).confirm_match(args=[bounty_id]).transact(wait_interval=12000, wait_retries=25)
         assert not tx_execution_failed(confirm_tx), confirm_tx
 
         bounty_final = router.get_bounty(args=[bounty_id]).call()
@@ -178,7 +178,7 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
         # Both candidates came back NOT_FIT/UNKNOWN: exercise the expiry
         # refund path for real instead, since the pool is now exhausted.
         print("\n[write] reclaim_expired_bounty(1) - pool exhausted, no FIT found")
-        reclaim_tx = router.reclaim_expired_bounty(args=[bounty_id]).transact()
+        reclaim_tx = router.reclaim_expired_bounty(args=[bounty_id]).transact(wait_interval=12000, wait_retries=25)
         assert not tx_execution_failed(reclaim_tx), reclaim_tx
         bounty_final = router.get_bounty(args=[bounty_id]).call()
         print("[view] get_bounty(1) after reclaim_expired_bounty:", bounty_final)
@@ -186,10 +186,10 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- write: post + cancel a second bounty (cheap, no nondet round) -----
     print(f"\n[write] post_bounty + cancel_bounty (second bounty) - refund path")
-    post2 = router.connect(poster).post_bounty(args=[REQUIREMENT_TRUE]).transact(value=FEE)
+    post2 = router.connect(poster).post_bounty(args=[REQUIREMENT_TRUE]).transact(value=FEE, wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(post2), post2
     bounty_id_2 = 2
-    cancel2 = router.connect(poster).cancel_bounty(args=[bounty_id_2]).transact()
+    cancel2 = router.connect(poster).cancel_bounty(args=[bounty_id_2]).transact(wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(cancel2), cancel2
     bounty2 = router.get_bounty(args=[bounty_id_2]).call()
     print("[view] get_bounty(2) after cancel:", bounty2)
@@ -197,13 +197,13 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- negative: only the owner may lower the pool cap --------------------
     print("\n[write] lower_pool_cap(5) as poster - expect refusal (not owner)")
-    bad_cap = router.connect(poster).lower_pool_cap(args=[5]).transact()
+    bad_cap = router.connect(poster).lower_pool_cap(args=[5]).transact(wait_interval=12000, wait_retries=25)
     assert tx_execution_failed(bad_cap), "non-owner lowering the cap must be refused"
     print("  refused as expected")
 
     # --- write: owner lowers the pool cap (monotonic) ------------------------
     print("\n[write] lower_pool_cap(5) as owner")
-    cap_tx = router.lower_pool_cap(args=[5]).transact()
+    cap_tx = router.lower_pool_cap(args=[5]).transact(wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(cap_tx), cap_tx
     cfg1 = router.get_config(args=[]).call()
     print("[view] get_config after lower_pool_cap:", cfg1)
@@ -211,13 +211,13 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- negative: cannot raise the cap back up ------------------------------
     print("\n[write] lower_pool_cap(8) as owner - expect refusal (would raise)")
-    raise_cap = router.lower_pool_cap(args=[8]).transact()
+    raise_cap = router.lower_pool_cap(args=[8]).transact(wait_interval=12000, wait_retries=25)
     assert tx_execution_failed(raise_cap), "raising the cap must be refused"
     print("  refused as expected")
 
     # --- write: lower_bounty_cap too ------------------------------------------
     print("\n[write] lower_bounty_cap(5) as owner")
-    bcap_tx = router.lower_bounty_cap(args=[5]).transact()
+    bcap_tx = router.lower_bounty_cap(args=[5]).transact(wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(bcap_tx), bcap_tx
     cfg2 = router.get_config(args=[]).call()
     print("[view] get_config after lower_bounty_cap:", cfg2)
@@ -225,7 +225,7 @@ def test_full_surface_drives_every_write_and_view(router, reader, parties):
 
     # --- write: deactivate_worker -----------------------------------------
     print("\n[write] deactivate_worker as worker_bad")
-    deact = router.connect(worker_bad).deactivate_worker(args=[]).transact()
+    deact = router.connect(worker_bad).deactivate_worker(args=[]).transact(wait_interval=12000, wait_retries=25)
     assert not tx_execution_failed(deact), deact
     wb = router.get_worker(args=[worker_bad.address]).call()
     print("[view] get_worker(worker_bad) after deactivate:", wb)
