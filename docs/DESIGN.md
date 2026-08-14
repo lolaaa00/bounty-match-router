@@ -108,3 +108,49 @@ One `find_and_judge` call = one nondet round (`exec_prompt` wrapped in
 embeddings (32-dim int vectors, cheap dot-products) — well within a single
 consensus round's practical latency budget, consistent with the
 sibling contracts' single-nondet-round design.
+
+## Two lifecycle bugs found in external review, fixed
+
+An external submission review flagged two real bugs, neither in the judged
+semantic-fit logic itself, both in deterministic bookkeeping the original
+test suite never exercised against the exact scenario that exposes them:
+
+1. **`register_worker` appended a re-registered worker's new embedding onto
+   the existing stored vector instead of replacing it.** `_cosine_millis`
+   defends against a length mismatch by returning a similarity of 0 (see
+   the function's own docstring), so a worker who updated their skill
+   summary even once would silently score 0 against every future
+   requirement forever after — permanently and invisibly removed from
+   meaningful ranking, despite `get_worker` still reporting their current
+   summary text and `active = True`. Nothing in the contract's own state
+   revealed this; it only shows up in ranking behavior.
+2. **`confirm_match` never checked whether the confirm window had already
+   elapsed.** It relied entirely on `reclaim_expired_proposal` having
+   already been called by someone else to flip the bounty out of
+   `BOUNTY_PROPOSED` first. Left unconfirmed and unreclaimed, a stale
+   proposal remained confirmable indefinitely by the original candidate,
+   which both contradicts `CONFIRM_TIMEOUT_SECONDS`'s documented purpose
+   and creates a race: whichever of "the candidate confirms" or "anyone
+   reclaims" lands first is nondeterministic in practice, when the design
+   intends the deadline itself to be the sole arbiter.
+
+**Fix:**
+- `register_worker` now calls `profile_slot.embedding.clear()` before
+  writing the freshly-computed embedding, so re-registration always fully
+  replaces the stored vector — the storage never holds embedding data from
+  more than one call.
+- `confirm_match` now computes `elapsed = _elapsed_seconds(_now_iso(),
+  bounty.proposed_at)` and reverts if `elapsed >= CONFIRM_TIMEOUT_SECONDS`,
+  independent of whether `reclaim_expired_proposal` has ever been called.
+  The two paths' boundaries now agree exactly: at the instant
+  `reclaim_expired_proposal` becomes callable, `confirm_match` has already
+  stopped being callable — there is no window where both are valid.
+
+Four new adversarial tests cover this directly:
+`test_register_worker_reregistration_replaces_embedding_not_appends` (which
+was confirmed to fail against the pre-fix contract before the fix was
+restored, by temporarily reverting the fix and re-running it — not just
+written to pass),
+`test_confirm_match_rejects_after_confirm_window_elapses`,
+`test_confirm_match_succeeds_one_second_before_confirm_window_elapses`, and
+`test_confirm_match_rejects_exactly_at_confirm_window_boundary`.

@@ -444,6 +444,12 @@ class BountyMatchRouter(gl.Contract):
         ivec = _vec_to_i32(vec)
 
         profile_slot = self.workers.get_or_insert_default(caller)
+        # Re-registration must REPLACE the stored embedding, not append to
+        # it -- appending on top of a stale vector corrupts every future
+        # cosine-similarity comparison against this profile (mismatched
+        # dimensionality, doubled magnitude), silently breaking ranking for
+        # any bounty judged after a worker updates their own skill summary.
+        profile_slot.embedding.clear()
         for x in ivec:
             profile_slot.embedding.append(i32(x))
         profile_slot.skill_summary = skill_summary
@@ -634,6 +640,18 @@ class BountyMatchRouter(gl.Contract):
         caller = _coerce_address(gl.message.sender_address)
         if bytes(caller.as_bytes) != bytes(bounty.proposed_candidate.as_bytes):
             raise gl.vm.UserError(f"{ERR_EXPECTED}: caller is not the proposed candidate")
+        # Deadline enforced here directly, not left to depend on someone
+        # else calling reclaim_expired_proposal first -- a stale proposal
+        # must never be confirmable, whether or not anyone has reopened it
+        # yet. This is deliberately checked as its own condition rather
+        # than folded into the status check above, so the revert reason
+        # tells the candidate exactly why (proposal existed, but is stale)
+        # rather than a generic "no live proposal."
+        elapsed = _elapsed_seconds(_now_iso(), bounty.proposed_at)
+        if elapsed >= CONFIRM_TIMEOUT_SECONDS:
+            raise gl.vm.UserError(
+                f"{ERR_EXPECTED}: confirm window has elapsed; call reclaim_expired_proposal instead"
+            )
 
         amount = bounty.amount
         worker = bounty.proposed_candidate

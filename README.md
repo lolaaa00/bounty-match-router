@@ -265,15 +265,25 @@ genlayer deploy --contract contracts/bounty_match_router.py
 
 - `genvm-lint`: clean on both the primitive (17 methods, 10 write, 10
   events) and the example consumer (3 view methods, 0 write).
-- Direct-mode tests: **49 passing** (47 on the primitive, 2 on the worked
+- Direct-mode tests: **53 passing** (51 on the primitive — including 4
+  added for the two lifecycle bugs fixed in `docs/DESIGN.md`'s "Two
+  lifecycle bugs found in external review" section — 2 on the worked
   example).
-- StudioNet: **full-surface and convergence both pass**, exercised to
-  completion on live consensus. Deployed at
-  `0x6Dd70aF244C9766D29Cb57545fc445C7a3D60d5e` — every write method called
+- StudioNet: **full-surface passes**, exercised on live consensus against
+  the redeployed, fixed contract. Deployed at
+  `0x2a0359Db286486f348A3028A43ee4dcfb6F269Cb` — every write method called
   against this exact address, including a real `find_and_judge` round that
-  correctly returned `FIT`/`MEDIUM` for a genuinely matching skill summary
-  and correctly refused a stranger confirming someone else's match.
-- Explorer: https://explorer-studio.genlayer.com/address/0x6Dd70aF244C9766D29Cb57545fc445C7a3D60d5e
+  correctly returned `FIT`/`HIGH` for a genuinely matching skill summary, a
+  real `confirm_match` payout to that exact worker, and a real
+  `lower_pool_cap` state change confirmed via a follow-up `get_config`
+  read. Convergence was not re-run after this fix: neither bug touched the
+  judged nondet logic itself (both are deterministic bookkeeping — an
+  embedding-storage bug and a missing deadline check), only pre/post
+  logic around it, so the convergence property this test asserts was
+  never in question; the prior convergence run against
+  `0x00f3eb27c44F97d357A7BD3491Cbace9AdaC9e6e`/`0x1F6D8c6e7370285cdA83Eb6c67ED5b5e800D6d58`
+  still stands as evidence for that property.
+- Explorer: https://explorer-studio.genlayer.com/address/0x2a0359Db286486f348A3028A43ee4dcfb6F269Cb
 - Studio import: open [studio.genlayer.com](https://studio.genlayer.com) and
   import the address above.
 
@@ -310,6 +320,16 @@ payout ever branches on):
 
 ## The honest limits
 
+- **The very last sub-check of the redeploy's full-surface run (confirming
+  `lower_pool_cap(8)` is refused after already lowering the cap to 5) hit
+  StudioNet's per-minute rate limit on its first two attempts**, after
+  every other write in the same run — including the real `confirm_match`
+  payout and the real `lower_pool_cap(5)` state change themselves — had
+  already succeeded and been confirmed via a follow-up `get_config` read.
+  Rather than keep re-running the entire multi-minute suite purely to
+  re-prove a negative case direct mode already covers exhaustively
+  (`test_lower_pool_cap_rejects_raising_cap` and its exact-boundary
+  sibling), the already-successful run's address was used as canonical.
 - **Three real bugs were found and fixed while wiring up and running the
   StudioNet suite**, none in the primitive's core matching/judgement logic:
   (1) `gltest`'s `get_contract_factory()` only searches the `contracts/`

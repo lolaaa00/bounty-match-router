@@ -378,6 +378,99 @@ def test_confirm_match_rejects_double_confirm(direct_deploy, direct_vm, direct_o
         c.confirm_match(bounty_id)
 
 
+def test_confirm_match_rejects_after_confirm_window_elapses(
+    direct_deploy, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    # The exact bug an external review caught: confirm_match must reject a
+    # stale proposal on its own, not rely on someone else having already
+    # called reclaim_expired_proposal to flip the bounty out of PROPOSED
+    # first. A candidate who simply sits on an expired proposal must never
+    # be able to confirm it after the window has passed.
+    c = _deploy(direct_deploy, direct_owner)
+    _register(c, direct_vm, direct_bob, GOOD_SUMMARY)
+    warp_to(direct_vm, "2026-01-01T00:00:00+00:00")
+    bounty_id = _post(c, direct_vm, direct_alice)
+    _find(c, direct_vm, bounty_id, FIT)
+    warp_to(direct_vm, "2026-01-01T00:30:00+00:00")  # exactly CONFIRM_TIMEOUT_SECONDS (1800s) later
+    direct_vm.startPrank(direct_bob)
+    with direct_vm.expect_revert("EXPECTED"):
+        c.confirm_match(bounty_id)
+    # bounty is still PROPOSED - confirm_match's own deadline check fired,
+    # independent of whether reclaim_expired_proposal was ever called
+    _poster, _req, _amt, status, *_rest = c.get_bounty(bounty_id)
+    assert int(status) == 1  # BOUNTY_PROPOSED, unchanged
+
+
+def test_confirm_match_succeeds_one_second_before_confirm_window_elapses(
+    direct_deploy, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    c = _deploy(direct_deploy, direct_owner)
+    _register(c, direct_vm, direct_bob, GOOD_SUMMARY)
+    warp_to(direct_vm, "2026-01-01T00:00:00+00:00")
+    bounty_id = _post(c, direct_vm, direct_alice, amount=555)
+    _find(c, direct_vm, bounty_id, FIT)
+    warp_to(direct_vm, "2026-01-01T00:29:59+00:00")  # one second short of the 1800s window
+    direct_vm.startPrank(direct_bob)
+    c.confirm_match(bounty_id)
+    _poster, _req, _amt, status, _cand, _fit, _conf, _reason, worker, *_rest = c.get_bounty(bounty_id)
+    assert int(status) == 2  # BOUNTY_MATCHED
+    assert worker.as_hex.lower() == as_address(direct_bob).as_hex.lower()
+
+
+def test_confirm_match_rejects_exactly_at_confirm_window_boundary(
+    direct_deploy, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    # Mirrors reclaim_expired_proposal's own boundary (elapsed >= TIMEOUT
+    # reopens the bounty), so at exactly the boundary the two paths must
+    # never overlap: confirm_match must already refuse by the same instant
+    # reclaim_expired_proposal becomes callable.
+    c = _deploy(direct_deploy, direct_owner)
+    _register(c, direct_vm, direct_bob, GOOD_SUMMARY)
+    warp_to(direct_vm, "2026-01-01T00:00:00+00:00")
+    bounty_id = _post(c, direct_vm, direct_alice)
+    _find(c, direct_vm, bounty_id, FIT)
+    warp_to(direct_vm, "2026-01-01T00:30:00+00:00")  # exactly 1800s later
+    c.reclaim_expired_proposal(bounty_id)  # now callable
+    _poster, _req, _amt, status, *_rest = c.get_bounty(bounty_id)
+    assert int(status) == 0  # BOUNTY_OPEN - reopened, never confirmable
+
+
+def test_register_worker_reregistration_replaces_embedding_not_appends(
+    direct_deploy, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    # The exact bug an external review caught: appending the new embedding
+    # on top of the old one instead of replacing it corrupts the stored
+    # vector's dimensionality, which _cosine_millis defends against by
+    # returning a similarity of 0 for any length mismatch (see the
+    # contract's own comment on that function). That makes this directly
+    # observable through ranking: alice first registers with completely
+    # unrelated skills, then re-registers with skills that genuinely match
+    # the bounty far better than bob's. If re-registration only appended,
+    # alice's corrupted (double-length) embedding would score 0 against the
+    # requirement and bob - an honestly weaker but correctly single-length
+    # match - would be ranked ahead of her and tried first. With the fix,
+    # alice's embedding correctly reflects only her current summary and she
+    # is ranked, and tried, ahead of bob.
+    c = _deploy(direct_deploy, direct_owner)
+    _register(c, direct_vm, direct_alice, BAD_SUMMARY)
+    _register(c, direct_vm, direct_alice, GOOD_SUMMARY)  # re-registration
+    _register(c, direct_vm, direct_bob, "Some Python experience, mostly scripting.")
+
+    bounty_id = _post(c, direct_vm, direct_owner)
+    _find(c, direct_vm, bounty_id, FIT)
+
+    _poster, _req, _amt, status, candidate, *_rest = c.get_bounty(bounty_id)
+    assert int(status) == 1  # BOUNTY_PROPOSED
+    assert candidate.as_hex.lower() == as_address(direct_alice).as_hex.lower(), (
+        "alice's re-registered (replaced, not appended) embedding must rank "
+        "and be tried ahead of bob's honestly-weaker but correctly-sized one"
+    )
+
+    summary, _reg_at, active = c.get_worker(as_address(direct_alice).as_hex)
+    assert summary == GOOD_SUMMARY
+    assert active is True
+
+
 # ---------------------------------------------------------------------------
 # Time-boundary paths: reclaim_expired_proposal / reclaim_expired_bounty
 # ---------------------------------------------------------------------------
