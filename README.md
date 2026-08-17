@@ -270,36 +270,48 @@ genlayer deploy --contract contracts/bounty_match_router.py
   lifecycle bugs found in external review" section — 2 on the worked
   example).
 - StudioNet: **full-surface passes**, exercised on live consensus against
-  the redeployed, fixed contract. Deployed at
-  `0x2a0359Db286486f348A3028A43ee4dcfb6F269Cb` — every write method called
+  the redeployed, fixed contract. A reviewer flagged that an earlier
+  Explorer submission (`0x2a0359Db286486f348A3028A43ee4dcfb6F269Cb`) did not
+  actually reflect the fixed GitHub source, despite the source itself being
+  correct — a stale deployment left linked after the fix, not a source bug.
+  Re-verified the local source is byte-identical to the pushed GitHub copy
+  (`diff` against a fresh `gh api` fetch), then redeployed clean and
+  re-exercised the full suite end to end. Canonical deployment:
+  `0x035De48C3496D56B9Cd52bDB9DFA710249bFaEA2` — every write method called
   against this exact address, including a real `find_and_judge` round that
   correctly returned `FIT`/`HIGH` for a genuinely matching skill summary, a
   real `confirm_match` payout to that exact worker, and a real
   `lower_pool_cap` state change confirmed via a follow-up `get_config`
-  read. Convergence was not re-run after this fix: neither bug touched the
-  judged nondet logic itself (both are deterministic bookkeeping — an
-  embedding-storage bug and a missing deadline check), only pre/post
-  logic around it, so the convergence property this test asserts was
-  never in question; the prior convergence run against
-  `0x00f3eb27c44F97d357A7BD3491Cbace9AdaC9e6e`/`0x1F6D8c6e7370285cdA83Eb6c67ED5b5e800D6d58`
-  still stands as evidence for that property.
-- Explorer: https://explorer-studio.genlayer.com/address/0x2a0359Db286486f348A3028A43ee4dcfb6F269Cb
+  read. Convergence was not re-run for this redeploy: nothing executable
+  changed between the prior fixed deployment and this one (same source,
+  confirmed identical to GitHub), so the convergence property already
+  proven against `0x00f3eb27c44F97d357A7BD3491Cbace9AdaC9e6e`/
+  `0x1F6D8c6e7370285cdA83Eb6c67ED5b5e800D6d58` still stands as evidence.
+- Explorer: https://explorer-studio.genlayer.com/address/0x035De48C3496D56B9Cd52bDB9DFA710249bFaEA2
 - Studio import: open [studio.genlayer.com](https://studio.genlayer.com) and
   import the address above.
 
 ## Measured on live consensus
 
-Full-surface run (6:36 wall-clock, one real consensus round):
+Full-surface run against the canonical redeploy (8:21 wall-clock, one real
+consensus round):
 - `find_and_judge(1)` against a bounty requiring "a senior Python backend
   engineer comfortable with async REST APIs and databases" ranked the
   registered pool by embedding similarity and judged the closest candidate
-  (a genuinely matching 6-years-experience summary) as **`FIT`/`MEDIUM`**,
-  reason: *"6 years Python with async REST APIs and Postgres aligns well
-  with requirements. Self-reported only, no verified credentials."*
-- `confirm_match` correctly refused a stranger and correctly paid the real
-  proposed candidate; `cancel_bounty` correctly refunded a second bounty's
-  poster; every access-control and cap-boundary negative refused as
-  expected.
+  (a genuinely matching 6-years-experience summary) as **`FIT`/`HIGH`**,
+  reason: *"Exact match: senior Python + 6y async REST APIs + Postgres
+  DBs"* — resolved on the very first candidate tried (`tried_count: 1`),
+  correctly skipping the weaker-fit worker entirely rather than needing a
+  second round.
+- `confirm_match` correctly refused a stranger (`worker_bad`, who was never
+  the proposed candidate) and correctly paid the real proposed candidate,
+  advancing the bounty to `BOUNTY_MATCHED` (status `2`); `cancel_bounty`
+  correctly refunded a second bounty's poster (status `3`,
+  `BOUNTY_CANCELLED`); `lower_pool_cap` and `lower_bounty_cap` both applied
+  and were confirmed via a follow-up `get_config` read (`10→5` and
+  `10→5`), and both correctly refused a non-owner caller and refused
+  raising the cap back up; `deactivate_worker` correctly flipped
+  `worker_bad`'s active flag to `False`.
 
 Convergence run (two independently deployed instances, asserting the
 strict form on the property the contract's own logic actually depends on —
@@ -320,16 +332,22 @@ payout ever branches on):
 
 ## The honest limits
 
-- **The very last sub-check of the redeploy's full-surface run (confirming
-  `lower_pool_cap(8)` is refused after already lowering the cap to 5) hit
-  StudioNet's per-minute rate limit on its first two attempts**, after
-  every other write in the same run — including the real `confirm_match`
-  payout and the real `lower_pool_cap(5)` state change themselves — had
-  already succeeded and been confirmed via a follow-up `get_config` read.
-  Rather than keep re-running the entire multi-minute suite purely to
-  re-prove a negative case direct mode already covers exhaustively
-  (`test_lower_pool_cap_rejects_raising_cap` and its exact-boundary
-  sibling), the already-successful run's address was used as canonical.
+- **A reviewer caught that the Explorer address on a prior submission round
+  did not match the fixed GitHub source** — the fix itself was correct and
+  already pushed, but the linked deployment was stale (from before the
+  fix). Fixed by redeploying and re-verifying `diff` against the live
+  GitHub copy before redeploying, and re-running the full-surface suite
+  end to end against the new address rather than assuming the fix carried
+  over. Left here rather than only in a commit message, since a stale
+  evidence link is exactly the kind of gap this category's review process
+  is designed to catch.
+- **The retry wrapper in `tests/conftest.py` did not originally retry
+  StudioNet's per-minute rate-limit response** (`-32029 Rate limit
+  exceeded`), only TLS/connection-level failures — discovered when this
+  same redeploy's full-surface run hit it mid-suite. Widened the wrapper to
+  also retry that specific error with a 65-second backoff (the server's own
+  `retry_after_seconds` plus margin), matching the same fix already applied
+  in this repo's other contracts' test suites.
 - **Three real bugs were found and fixed while wiring up and running the
   StudioNet suite**, none in the primitive's core matching/judgement logic:
   (1) `gltest`'s `get_contract_factory()` only searches the `contracts/`

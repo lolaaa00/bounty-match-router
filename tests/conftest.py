@@ -26,23 +26,40 @@ def _patch_genlayer_provider_retries():
 
     original_make_request = GenLayerProvider.make_request
 
-    def make_request_with_retry(self, method, params, _max_attempts=5):
+    def make_request_with_retry(self, method, params, _max_attempts=6):
         last_err = None
         for attempt in range(_max_attempts):
             try:
                 return original_make_request(self, method, params)
             except Exception as err:  # noqa: BLE001 -- deliberately broad, see docstring
                 msg = str(err)
+                # StudioNet's per-minute request cap (30/min, shared across
+                # whatever else is hitting the hosted RPC that minute) is hit
+                # routinely by a full-surface run's steady stream of receipt
+                # polls -- transient in exactly the same sense as a dropped
+                # TLS session, just paced by the server's own quota window
+                # instead of the network. Gets a fixed 65s sleep (the
+                # server's own "retry_after_seconds": 60 plus margin) rather
+                # than the shorter exponential backoff below.
+                rate_limited = "Rate limit exceeded" in msg or "-32029" in msg
                 transient = (
-                    "SSLError" in msg
+                    rate_limited
+                    or "SSLError" in msg
                     or "bad record mac" in msg
                     or "record layer failure" in msg
                     or "ConnectionError" in msg
+                    # "ConnectionResetError" does NOT contain "ConnectionError"
+                    # as a substring ("Reset" sits between them) - discovered
+                    # the hard way when a real connection-reset failure slipped
+                    # straight past this check instead of being retried.
+                    or "ConnectionReset" in msg
+                    or "Connection aborted" in msg
+                    or "Connection reset by peer" in msg
                 )
                 if not transient or attempt == _max_attempts - 1:
                     raise
                 last_err = err
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(65 if rate_limited else 1.5 * (attempt + 1))
         raise last_err  # pragma: no cover -- unreachable, loop always returns or raises
 
     GenLayerProvider.make_request = make_request_with_retry
